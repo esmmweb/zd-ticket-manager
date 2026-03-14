@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# --- Configuration ---
+# Replace with your Zendesk subdomain.
+ZENDESK_SUBDOMAIN="esmwebsolutions"
+
+# Replace with the email address you use to log in, followed by /token.
+# IMPORTANT: Do NOT use your password. Generate an API token in Zendesk Admin Center.
+# Admin Center > Apps and integrations > APIs > Zendesk API > Add API token
+ZENDESK_EMAIL="emeliostevemalisa@gmail.com/token"
+
+# Your Zendesk API token.
+# For better security, it's best to load this from an environment variable (see next example).
+ZENDESK_API_TOKEN="vIw6CvWaJOiu4ai63n0IJH3QY3RhYpSohE0gFh9r"
+
+# --- Script Logic ---
+
+# Check if all required arguments are provided.
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 \"<ticket subject>\" \"<ticket body>\" \"<requester_email>\""
+    echo "Example: $0 \"Server is down\" \"The main web server is not responding.\" \"user@example.com\""
+    exit 1
+fi
+
+# Assign command-line arguments to variables for clarity.
+SUBJECT="$1"
+COMMENT_BODY="$2"
+REQUESTER_EMAIL="$3"
+
+# Construct the JSON payload for the new ticket.
+# We use printf for safe string formatting.
+JSON_PAYLOAD=$(printf '{
+  "ticket": {
+    "subject": "%s",
+    "comment": {
+      "body": "%s"
+    },
+    "requester": {
+      "email": "%s",
+      "name": "%s"
+    }
+  }
+}' "$SUBJECT" "$COMMENT_BODY" "$REQUESTER_EMAIL" "$REQUESTER_EMAIL")
+
+# The API endpoint for creating tickets.
+API_URL="https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
+
+# Make the API call using curl.
+echo "Creating Zendesk ticket..."
+curl "$API_URL" \
+  -u "${ZENDESK_EMAIL}:${ZENDESK_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d "$JSON_PAYLOAD"
+
+echo -e "\nDone."

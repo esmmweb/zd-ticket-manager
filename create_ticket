@@ -40,6 +40,8 @@ case "$TEMPLATE_OPTION" in
     SITE_REVIEW_URL="https://autopilot-${SITE_NAME}.pantheonsite.io/"
     echo "Autopilot URL: $AUTOPILOT_URL"
     echo "Site review URL: $SITE_REVIEW_URL"
+    echo ""
+    read -p "VRT report URL: " VRT_REPORT_URL
     ;;
   2)
     echo "Manual template not yet implemented."

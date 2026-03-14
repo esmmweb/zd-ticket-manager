@@ -10,6 +10,23 @@ else
   exit 1
 fi
 
+# --- Helper: business days calculation ---
+# Returns the number of calendar days needed to advance N business days (Mon-Fri).
+add_business_days() {
+  local n=$1
+  local count=0
+  local offset=0
+  while [ "$count" -lt "$n" ]; do
+    offset=$((offset + 1))
+    local dow
+    dow=$(date -v+${offset}d "+%u")  # 1=Mon ... 5=Fri, 6=Sat, 7=Sun
+    if [ "$dow" -le 5 ]; then
+      count=$((count + 1))
+    fi
+  done
+  echo "$offset"
+}
+
 # --- Prompts ---
 
 read -p "What's the site name? " SITE_NAME
@@ -36,6 +53,13 @@ case "$TEMPLATE_OPTION" in
       exit 1
     fi
 
+    echo "Fetching primary domain for '${SITE_NAME}.live'..."
+    PRIMARY_DOMAIN=$(terminus domain:list "${SITE_NAME}.live" --format=json 2>/dev/null | jq -r 'to_entries[] | select(.value.primary == true) | .key')
+    if [ -z "$PRIMARY_DOMAIN" ]; then
+      echo "Warning: Could not retrieve primary domain."
+      PRIMARY_DOMAIN="[domain]"
+    fi
+
     AUTOPILOT_URL="https://dashboard.pantheon.io/sites/${UUID}#autopilot"
     SITE_REVIEW_URL="https://autopilot-${SITE_NAME}.pantheonsite.io/"
     echo "Autopilot URL: $AUTOPILOT_URL"
@@ -48,8 +72,15 @@ case "$TEMPLATE_OPTION" in
     exit 1
     ;;
   3)
-    echo "Wait for Approval template not yet implemented."
-    exit 1
+    TEMPLATE_NAME="managed_updates"
+
+    echo ""
+    echo "Fetching primary domain for '${SITE_NAME}.live'..."
+    PRIMARY_DOMAIN=$(terminus domain:list "${SITE_NAME}.live" --format=json 2>/dev/null | jq -r 'to_entries[] | select(.value.primary == true) | .key')
+    if [ -z "$PRIMARY_DOMAIN" ]; then
+      echo "Warning: Could not retrieve primary domain."
+      PRIMARY_DOMAIN="[domain]"
+    fi
     ;;
   4)
     echo "External template not yet implemented."
@@ -61,10 +92,18 @@ case "$TEMPLATE_OPTION" in
     ;;
 esac
 
-# --- Auto-calculate dates ---
-# Deploy date: today + 3 days. Reply-by: today + 2 days (one day before deploy).
-DEPLOY_DATE=$(date -v+3d "+%a, %b %d, '%y")
-REPLY_BY_DATE=$(date -v+2d "+%a, %b %d, '%y")
+# --- Auto-calculate dates (business days only, skipping Sat/Sun) ---
+DEPLOY_OFFSET=$(add_business_days 3)
+REPLY_OFFSET=$(add_business_days 2)
+DEPLOY_DATE=$(date -v+${DEPLOY_OFFSET}d "+%a, %b %d, '%y")
+REPLY_BY_DATE=$(date -v+${REPLY_OFFSET}d "+%a, %b %d, '%y")
+
+# --- Auto-generate subject for managed updates templates ---
+if [ "$TEMPLATE_OPTION" = "1" ]; then
+  AUTO_SUBJECT="${PRIMARY_DOMAIN} - Managed Updates Ready for Review - Deploy to LIVE on ${DEPLOY_DATE}."
+elif [ "$TEMPLATE_OPTION" = "3" ]; then
+  AUTO_SUBJECT="${PRIMARY_DOMAIN} - Managed Updates Ready for Review - Deploy upon Approval."
+fi
 
 # --- Load template ---
 
@@ -97,9 +136,17 @@ HTML_BODY=$(sed \
   -e "s|{{TESTED_URLS}}|${TESTED_URLS}|g" \
   "$BODY_FILE")
 
-# --- Build and send the ticket ---
+# --- Build subject ---
 
-read -p $'\nTicket subject: ' SUBJECT
+echo ""
+if [ -n "$AUTO_SUBJECT" ]; then
+  echo "Auto-generated subject: $AUTO_SUBJECT"
+  read -p "Press Enter to use this subject, or type a custom one: " CUSTOM_SUBJECT
+  SUBJECT="${CUSTOM_SUBJECT:-$AUTO_SUBJECT}"
+else
+  read -p "Ticket subject: " SUBJECT
+fi
+
 read -p "Requester email: " REQUESTER_EMAIL
 
 # Construct the JSON payload using jq for safe encoding.

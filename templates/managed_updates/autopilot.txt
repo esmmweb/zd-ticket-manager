@@ -10,7 +10,7 @@
   <li>Schedule the deployment for a different date. Please reply with "Please schedule the deployment for (specify date)"</li>
 </ul>
 
-<p>You can review the updated site here: <a href="{{SITE_REVIEW_URL}}">{{SITE_REVIEW_URL}}</a></p>
+<p>You can review the updated <a href="{{SITE_REVIEW_URL}}">site here</a>.</p>
 
 <p>Visual Regression Testing of unauthenticated URLs passed, but no additional backend functionality was tested.</p>
 

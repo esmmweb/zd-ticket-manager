@@ -37,7 +37,9 @@ case "$TEMPLATE_OPTION" in
     fi
 
     AUTOPILOT_URL="https://dashboard.pantheon.io/sites/${UUID}#autopilot"
+    SITE_REVIEW_URL="https://autopilot-${SITE_NAME}.pantheonsite.io/"
     echo "Autopilot URL: $AUTOPILOT_URL"
+    echo "Site review URL: $SITE_REVIEW_URL"
     ;;
   2)
     echo "Manual template not yet implemented."

@@ -13,31 +13,40 @@ fi
 # --- Script Logic ---
 
 # Check if all required arguments are provided.
-if [ "$#" -ne 3 ]; then
-    echo "Usage: $0 \"<ticket subject>\" \"<ticket body>\" \"<requester_email>\""
-    echo "Example: $0 \"Server is down\" \"The main web server is not responding.\" \"user@example.com\""
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 \"<ticket subject>\" \"<requester_email>\""
+    echo "Example: $0 \"Managed Updates Ready for Review\" \"user@example.com\""
     exit 1
 fi
 
 # Assign command-line arguments to variables for clarity.
 SUBJECT="$1"
-COMMENT_BODY="$2"
-REQUESTER_EMAIL="$3"
+REQUESTER_EMAIL="$2"
 
-# Construct the JSON payload for the new ticket.
-# We use printf for safe string formatting.
-JSON_PAYLOAD=$(printf '{
-  "ticket": {
-    "subject": "%s",
-    "comment": {
-      "body": "%s"
-    },
-    "requester": {
-      "email": "%s",
-      "name": "%s"
-    }
-  }
-}' "$SUBJECT" "$COMMENT_BODY" "$REQUESTER_EMAIL" "$REQUESTER_EMAIL")
+# Build the ticket body from the template, substituting placeholders with .env values.
+TEMPLATE_FILE="$SCRIPT_DIR/ticket_body_template.txt"
+if [ ! -f "$TEMPLATE_FILE" ]; then
+    echo "Error: Template file not found at $TEMPLATE_FILE"
+    exit 1
+fi
+
+COMMENT_BODY=$(sed \
+  -e "s|{{DEPLOY_DATE}}|${DEPLOY_DATE}|g" \
+  -e "s|{{REPLY_BY_DATE}}|${REPLY_BY_DATE}|g" \
+  -e "s|{{SITE_REVIEW_URL}}|${SITE_REVIEW_URL}|g" \
+  -e "s|{{VRT_REPORT_URL}}|${VRT_REPORT_URL}|g" \
+  -e "s|{{CORE_UPDATES}}|${CORE_UPDATES}|g" \
+  -e "s|{{MODULE_UPDATES}}|${MODULE_UPDATES}|g" \
+  -e "s|{{COMPOSER_UPDATES}}|${COMPOSER_UPDATES}|g" \
+  -e "s|{{TESTED_URLS}}|${TESTED_URLS}|g" \
+  "$TEMPLATE_FILE")
+
+# Construct the JSON payload using jq for safe encoding.
+JSON_PAYLOAD=$(jq -n \
+  --arg subject "$SUBJECT" \
+  --arg body "$COMMENT_BODY" \
+  --arg email "$REQUESTER_EMAIL" \
+  '{ticket: {subject: $subject, comment: {body: $body}, requester: {email: $email, name: $email}}}')
 
 # The API endpoint for creating tickets.
 API_URL="https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"

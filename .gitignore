@@ -3,3 +3,8 @@
 
 # Environment / credentials
 .env
+.env.local
+
+# Next.js
+.next/
+node_modules/

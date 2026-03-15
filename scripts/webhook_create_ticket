@@ -1,0 +1,189 @@
+#!/bin/bash
+# Webhook-only variant of create_ticket.
+# Always non-interactive — all values must be supplied as flags.
+# Designed to be called from a Next.js API route or any HTTP trigger.
+
+# --- Configuration ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/.env" ]; then
+  source "$SCRIPT_DIR/.env"
+else
+  echo '{"error":".env file not found"}' >&2
+  exit 1
+fi
+
+# --- Usage ---
+usage() {
+  cat <<EOF
+Usage: ./webhook_create_ticket [OPTIONS]
+
+All options are required unless noted.
+
+Options:
+  -s, --site <name>       Pantheon site name
+  -t, --template <type>   Template: autopilot | approval
+  -e, --email <address>   Requester email address
+      --vrt <url>         VRT report URL (required for autopilot template)
+      --subject <text>    Override the auto-generated subject (optional)
+  -h, --help              Show this help message
+
+Example:
+  ./webhook_create_ticket \\
+    --site mysite \\
+    --template autopilot \\
+    --email client@example.com \\
+    --vrt "https://vrt.example.com/report"
+EOF
+  exit 0
+}
+
+# --- Parse flags ---
+FLAG_SITE=""
+FLAG_TEMPLATE=""
+FLAG_EMAIL=""
+FLAG_VRT=""
+FLAG_SUBJECT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s|--site)      FLAG_SITE="$2";     shift 2 ;;
+    -t|--template)  FLAG_TEMPLATE="$2"; shift 2 ;;
+    -e|--email)     FLAG_EMAIL="$2";    shift 2 ;;
+    --vrt)          FLAG_VRT="$2";      shift 2 ;;
+    --subject)      FLAG_SUBJECT="$2";  shift 2 ;;
+    -h|--help)      usage ;;
+    *) echo "{\"error\":\"Unknown option: $1\"}"; exit 1 ;;
+  esac
+done
+
+# --- Validate required flags ---
+ERRORS=()
+[ -z "$FLAG_SITE" ]     && ERRORS+=("--site is required")
+[ -z "$FLAG_TEMPLATE" ] && ERRORS+=("--template is required")
+[ -z "$FLAG_EMAIL" ]    && ERRORS+=("--email is required")
+
+if [ "${#ERRORS[@]}" -gt 0 ]; then
+  printf '{"error":"%s"}\n' "${ERRORS[*]}" >&2
+  exit 1
+fi
+
+case "$FLAG_TEMPLATE" in
+  autopilot) TEMPLATE_OPTION=1 ;;
+  approval)  TEMPLATE_OPTION=3 ;;
+  *)
+    echo "{\"error\":\"Invalid template '$FLAG_TEMPLATE'. Use: autopilot | approval\"}" >&2
+    exit 1
+    ;;
+esac
+
+# --- Helper: cross-platform business days calculation ---
+# Supports macOS (BSD date) and Linux (GNU date).
+add_business_days() {
+  local n=$1
+  local count=0
+  local offset=0
+  while [ "$count" -lt "$n" ]; do
+    offset=$((offset + 1))
+    local dow
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      dow=$(date -v+${offset}d "+%u")
+    else
+      dow=$(date -d "+${offset} days" "+%u")
+    fi
+    if [ "$dow" -le 5 ]; then
+      count=$((count + 1))
+    fi
+  done
+  echo "$offset"
+}
+
+# --- Template-specific logic ---
+TEMPLATE_NAME="managed_updates"
+
+case "$TEMPLATE_OPTION" in
+  1)
+    UUID=$(terminus site:info "$FLAG_SITE" --field=ID 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$UUID" ]; then
+      echo '{"error":"Could not retrieve UUID. Check site name and terminus auth."}' >&2
+      exit 1
+    fi
+
+    PRIMARY_DOMAIN=$(terminus domain:list "${FLAG_SITE}.live" --format=json 2>/dev/null | jq -r 'to_entries[] | select(.value.primary == true) | .key')
+    [ -z "$PRIMARY_DOMAIN" ] && PRIMARY_DOMAIN="[domain]"
+
+    AUTOPILOT_URL="https://dashboard.pantheon.io/sites/${UUID}#autopilot"
+    SITE_REVIEW_URL="https://autopilot-${FLAG_SITE}.pantheonsite.io/"
+
+    if [ -z "$FLAG_VRT" ]; then
+      echo '{"error":"--vrt is required for the autopilot template"}' >&2
+      exit 1
+    fi
+    VRT_REPORT_URL="$FLAG_VRT"
+    ;;
+  3)
+    PRIMARY_DOMAIN=$(terminus domain:list "${FLAG_SITE}.live" --format=json 2>/dev/null | jq -r 'to_entries[] | select(.value.primary == true) | .key')
+    [ -z "$PRIMARY_DOMAIN" ] && PRIMARY_DOMAIN="[domain]"
+    ;;
+esac
+
+# --- Auto-calculate dates (business days, skipping Sat/Sun) ---
+DEPLOY_OFFSET=$(add_business_days 3)
+REPLY_OFFSET=$(add_business_days 2)
+
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  DEPLOY_DATE=$(date -v+${DEPLOY_OFFSET}d "+%a, %b %d, '%y")
+  REPLY_BY_DATE=$(date -v+${REPLY_OFFSET}d "+%a, %b %d, '%y")
+else
+  DEPLOY_DATE=$(date -d "+${DEPLOY_OFFSET} days" "+%a, %b %d, '%y")
+  REPLY_BY_DATE=$(date -d "+${REPLY_OFFSET} days" "+%a, %b %d, '%y")
+fi
+
+# --- Build subject ---
+if [ -n "$FLAG_SUBJECT" ]; then
+  SUBJECT="$FLAG_SUBJECT"
+elif [ "$TEMPLATE_OPTION" = "1" ]; then
+  SUBJECT="${PRIMARY_DOMAIN} - Managed Updates Ready for Review - Deploy to LIVE on ${DEPLOY_DATE}."
+elif [ "$TEMPLATE_OPTION" = "3" ]; then
+  SUBJECT="${PRIMARY_DOMAIN} - Managed Updates Ready for Review - Deploy upon Approval."
+fi
+
+# --- Load template ---
+TEMPLATE_DIR="$SCRIPT_DIR/templates/$TEMPLATE_NAME"
+
+VALUES_FILE="$TEMPLATE_DIR/values.env"
+[ -f "$VALUES_FILE" ] && source "$VALUES_FILE"
+
+BODY_FILE=$(find "$TEMPLATE_DIR" -maxdepth 1 -name "*.txt" | head -n 1)
+if [ -z "$BODY_FILE" ]; then
+  echo '{"error":"No .txt body file found in template directory"}' >&2
+  exit 1
+fi
+
+# --- Substitute placeholders ---
+HTML_BODY=$(sed \
+  -e "s|{{AUTOPILOT_URL}}|${AUTOPILOT_URL}|g" \
+  -e "s|{{DEPLOY_DATE}}|${DEPLOY_DATE}|g" \
+  -e "s|{{REPLY_BY_DATE}}|${REPLY_BY_DATE}|g" \
+  -e "s|{{SITE_REVIEW_URL}}|${SITE_REVIEW_URL}|g" \
+  -e "s|{{VRT_REPORT_URL}}|${VRT_REPORT_URL}|g" \
+  -e "s|{{CORE_UPDATES}}|${CORE_UPDATES}|g" \
+  -e "s|{{MODULE_UPDATES}}|${MODULE_UPDATES}|g" \
+  -e "s|{{COMPOSER_UPDATES}}|${COMPOSER_UPDATES}|g" \
+  -e "s|{{TESTED_URLS}}|${TESTED_URLS}|g" \
+  "$BODY_FILE")
+
+# --- Build and send ticket ---
+JSON_PAYLOAD=$(jq -n \
+  --arg subject "$SUBJECT" \
+  --arg html_body "$HTML_BODY" \
+  --arg email "$FLAG_EMAIL" \
+  '{ticket: {subject: $subject, comment: {html_body: $html_body}, requester: {email: $email, name: $email}}}')
+
+API_URL="https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
+
+curl --silent \
+  "$API_URL" \
+  -u "${ZENDESK_EMAIL}:${ZENDESK_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  -d "$JSON_PAYLOAD"

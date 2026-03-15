@@ -27,104 +27,19 @@ add_business_days() {
   echo "$offset"
 }
 
-# --- Usage ---
-usage() {
-  cat <<EOF
-Usage: ./create_ticket [OPTIONS]
+# --- Prompts ---
 
-Run without options to use interactive prompts.
+read -p "What's the site name? " SITE_NAME
 
-Options:
-  -s, --site <name>         Pantheon site name
-  -t, --template <type>     Template type: autopilot | approval | manual | external
-  -e, --email <address>     Requester email address
-      --subject <text>      Custom ticket subject (overrides auto-generated subject)
-      --vrt <url>           VRT report URL (required for autopilot template)
-  -n, --non-interactive     Disable all prompts; exit with error if required values are missing
-  -h, --help                Show this help message
+echo ""
+echo "What's the template?"
+echo "  1) Autopilot"
+echo "  2) Manual"
+echo "  3) Wait for Approval"
+echo "  4) External"
+echo ""
+read -p "Select an option (1-4): " TEMPLATE_OPTION
 
-Examples:
-  # Interactive mode (default)
-  ./create_ticket
-
-  # Non-interactive / webhook-friendly
-  ./create_ticket --non-interactive \\
-    --site mysite \\
-    --template autopilot \\
-    --email client@example.com \\
-    --vrt "https://vrt.example.com/report"
-EOF
-  exit 0
-}
-
-# --- Parse flags ---
-NON_INTERACTIVE=false
-FLAG_SITE=""
-FLAG_TEMPLATE=""
-FLAG_EMAIL=""
-FLAG_SUBJECT=""
-FLAG_VRT=""
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -s|--site)            FLAG_SITE="$2";     shift 2 ;;
-    -t|--template)        FLAG_TEMPLATE="$2"; shift 2 ;;
-    -e|--email)           FLAG_EMAIL="$2";    shift 2 ;;
-    --subject)            FLAG_SUBJECT="$2";  shift 2 ;;
-    --vrt)                FLAG_VRT="$2";      shift 2 ;;
-    -n|--non-interactive) NON_INTERACTIVE=true; shift ;;
-    -h|--help)            usage ;;
-    *) echo "Unknown option: $1"; echo ""; usage ;;
-  esac
-done
-
-# --- Helper: resolve a value from a flag or interactive prompt ---
-# Usage: prompt_or_flag <flag_value> <prompt_text> <variable_name>
-prompt_or_flag() {
-  local flag_val="$1"
-  local prompt="$2"
-  local result_var="$3"
-
-  if [ -n "$flag_val" ]; then
-    printf -v "$result_var" '%s' "$flag_val"
-  elif [ "$NON_INTERACTIVE" = "true" ]; then
-    echo "Error: --$(echo "$result_var" | tr '[:upper:]' '[:lower:]') is required in non-interactive mode."
-    exit 1
-  else
-    read -p "$prompt" "$result_var"
-  fi
-}
-
-# --- Site name ---
-prompt_or_flag "$FLAG_SITE" "What's the site name? " SITE_NAME
-
-# --- Template selection ---
-if [ -n "$FLAG_TEMPLATE" ]; then
-  case "$FLAG_TEMPLATE" in
-    autopilot) TEMPLATE_OPTION=1 ;;
-    manual)    TEMPLATE_OPTION=2 ;;
-    approval)  TEMPLATE_OPTION=3 ;;
-    external)  TEMPLATE_OPTION=4 ;;
-    *)
-      echo "Error: Invalid template '$FLAG_TEMPLATE'. Valid options: autopilot | approval | manual | external"
-      exit 1
-      ;;
-  esac
-elif [ "$NON_INTERACTIVE" = "true" ]; then
-  echo "Error: --template is required in non-interactive mode."
-  exit 1
-else
-  echo ""
-  echo "What's the template?"
-  echo "  1) Autopilot"
-  echo "  2) Manual"
-  echo "  3) Wait for Approval"
-  echo "  4) External"
-  echo ""
-  read -p "Select an option (1-4): " TEMPLATE_OPTION
-fi
-
-# --- Template-specific logic ---
 case "$TEMPLATE_OPTION" in
   1)
     TEMPLATE_NAME="managed_updates"
@@ -147,14 +62,10 @@ case "$TEMPLATE_OPTION" in
 
     AUTOPILOT_URL="https://dashboard.pantheon.io/sites/${UUID}#autopilot"
     SITE_REVIEW_URL="https://autopilot-${SITE_NAME}.pantheonsite.io/"
-
-    if [ "$NON_INTERACTIVE" = "false" ]; then
-      echo "Autopilot URL: $AUTOPILOT_URL"
-      echo "Site review URL: $SITE_REVIEW_URL"
-      echo ""
-    fi
-
-    prompt_or_flag "$FLAG_VRT" "VRT report: " VRT_REPORT_URL
+    echo "Autopilot URL: $AUTOPILOT_URL"
+    echo "Site review URL: $SITE_REVIEW_URL"
+    echo ""
+    read -p "VRT report: " VRT_REPORT_URL
     ;;
   2)
     echo "Manual template not yet implemented."
@@ -195,21 +106,24 @@ elif [ "$TEMPLATE_OPTION" = "3" ]; then
 fi
 
 # --- Load template ---
+
 TEMPLATE_DIR="$SCRIPT_DIR/templates/$TEMPLATE_NAME"
 
+# Load the template's values file (site-agnostic defaults).
 VALUES_FILE="$TEMPLATE_DIR/values.env"
 if [ -f "$VALUES_FILE" ]; then
   source "$VALUES_FILE"
 fi
 
+# The body file is the .txt file in the template directory.
 BODY_FILE=$(find "$TEMPLATE_DIR" -maxdepth 1 -name "*.txt" | head -n 1)
 if [ -z "$BODY_FILE" ]; then
-  echo "Error: No .txt body file found in $TEMPLATE_DIR"
-  exit 1
+    echo "Error: No .txt body file found in $TEMPLATE_DIR"
+    exit 1
 fi
 
 # --- Substitute placeholders ---
-# Variables set via flags or auto-calculated above take precedence over values.env.
+# Variables set interactively or auto-calculated above take precedence over values.env.
 HTML_BODY=$(sed \
   -e "s|{{AUTOPILOT_URL}}|${AUTOPILOT_URL}|g" \
   -e "s|{{DEPLOY_DATE}}|${DEPLOY_DATE}|g" \
@@ -222,29 +136,19 @@ HTML_BODY=$(sed \
   -e "s|{{TESTED_URLS}}|${TESTED_URLS}|g" \
   "$BODY_FILE")
 
-# --- Resolve subject ---
+# --- Build subject ---
+
 echo ""
-if [ -n "$FLAG_SUBJECT" ]; then
-  SUBJECT="$FLAG_SUBJECT"
-elif [ -n "$AUTO_SUBJECT" ]; then
-  if [ "$NON_INTERACTIVE" = "true" ]; then
-    SUBJECT="$AUTO_SUBJECT"
-  else
-    echo "Auto-generated subject: $AUTO_SUBJECT"
-    read -p "Press Enter to use this subject, or type a custom one: " CUSTOM_SUBJECT
-    SUBJECT="${CUSTOM_SUBJECT:-$AUTO_SUBJECT}"
-  fi
+if [ -n "$AUTO_SUBJECT" ]; then
+  echo "Auto-generated subject: $AUTO_SUBJECT"
+  read -p "Press Enter to use this subject, or type a custom one: " CUSTOM_SUBJECT
+  SUBJECT="${CUSTOM_SUBJECT:-$AUTO_SUBJECT}"
 else
-  if [ "$NON_INTERACTIVE" = "true" ]; then
-    echo "Error: --subject is required for this template in non-interactive mode."
-    exit 1
-  fi
   read -p "Ticket subject: " SUBJECT
 fi
 
-prompt_or_flag "$FLAG_EMAIL" "Requester email: " REQUESTER_EMAIL
+read -p "Requester email: " REQUESTER_EMAIL
 
-# --- Build and send ticket ---
 # Construct the JSON payload using jq for safe encoding.
 # html_body is used so that links and formatting render correctly in Zendesk.
 JSON_PAYLOAD=$(jq -n \
@@ -253,6 +157,7 @@ JSON_PAYLOAD=$(jq -n \
   --arg email "$REQUESTER_EMAIL" \
   '{ticket: {subject: $subject, comment: {html_body: $html_body}, requester: {email: $email, name: $email}}}')
 
+# The API endpoint for creating tickets.
 API_URL="https://${ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
 
 echo ""

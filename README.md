@@ -1,149 +1,184 @@
 # zd-ticket-manager
 
-A Bash script to create Zendesk support tickets via the Zendesk REST API. Supports both interactive (CLI) and non-interactive (webhook/automation) modes.
+A tool for creating Zendesk support tickets for Pantheon managed updates. Includes a CLI shell script for manual use and a Next.js webhook app for automation.
 
-## Prerequisites
+## Repository structure
 
-- **curl** — used to make API requests (pre-installed on macOS and most Linux distros)
-- **jq** — used to safely build the JSON payload (`brew install jq` on macOS)
-- **terminus** — Pantheon CLI, required for managed updates templates ([install guide](https://pantheon.io/docs/terminus/install))
+```
+zd-ticket-manager/
+├── app/                        # Next.js app (webhook API)
+│   ├── api/ticket/route.js     # POST /api/ticket endpoint
+│   ├── layout.js
+│   └── page.js
+├── lib/                        # Next.js shared logic
+│   ├── businessDays.js
+│   ├── pantheon.js
+│   └── templates.js
+├── scripts/                    # Shell scripts for CLI use
+│   ├── create_ticket           # Interactive ticket creation
+│   ├── webhook_create_ticket   # Non-interactive (flags only)
+│   └── templates/
+│       └── managed_updates/
+│           ├── autopilot.txt
+│           └── values.env
+├── package.json
+├── next.config.mjs
+└── .env.example
+```
+
+---
+
+## CLI — `scripts/create_ticket`
+
+An interactive shell script for creating tickets from the terminal.
+
+### Prerequisites
+
+- **curl** — pre-installed on macOS and most Linux distros
+- **jq** — `brew install jq` on macOS
+- **terminus** — Pantheon CLI ([install guide](https://pantheon.io/docs/terminus/install)), must be authenticated (`terminus auth:login`)
 - A Zendesk account with API access enabled
 
-## Installation
+### Setup
 
-1. **Clone or download this repository:**
-
-   ```bash
-   git clone <repo-url>
-   cd zd-ticket-manager
-   ```
-
-2. **Make the script executable:**
+1. **Make the script executable:**
 
    ```bash
-   chmod +x create_ticket
+   chmod +x scripts/create_ticket
+   chmod +x scripts/webhook_create_ticket
    ```
 
-3. **Create a `.env` file** in the same directory as the script:
+2. **Create a `.env` file** at the repo root:
 
    ```bash
    cp .env.example .env
    ```
 
-   Or create it manually:
+   Fill in your values:
 
    ```
    ZENDESK_SUBDOMAIN=yoursubdomain
    ZENDESK_EMAIL=you@example.com/token
    ZENDESK_API_TOKEN=your_api_token_here
+   PANTHEON_MACHINE_TOKEN=your_machine_token_here
+   WEBHOOK_SECRET=your_webhook_secret_here
    ```
 
-   - `ZENDESK_SUBDOMAIN` — the subdomain of your Zendesk account (e.g. `mycompany` from `mycompany.zendesk.com`)
-   - `ZENDESK_EMAIL` — your Zendesk login email, appended with `/token` (e.g. `you@example.com/token`)
-   - `ZENDESK_API_TOKEN` — your Zendesk API token (Admin Center > Apps and integrations > APIs > Zendesk API)
+   | Variable | Description |
+   |---|---|
+   | `ZENDESK_SUBDOMAIN` | Subdomain of your Zendesk account (e.g. `mycompany` from `mycompany.zendesk.com`) |
+   | `ZENDESK_EMAIL` | Your Zendesk login email appended with `/token` (e.g. `you@example.com/token`) |
+   | `ZENDESK_API_TOKEN` | Zendesk API token (Admin Center > Apps and integrations > APIs > Zendesk API) |
+   | `PANTHEON_MACHINE_TOKEN` | Pantheon machine token for domain lookup ([generate here](https://dashboard.pantheon.io/personal-settings/machine-tokens)) |
+   | `WEBHOOK_SECRET` | A long random string used to authenticate incoming webhook requests |
 
-   > **Note:** The `.env` file is excluded from git. Never commit credentials to version control.
+   > The `.env` file is excluded from git. Never commit credentials to version control.
 
-## Usage
+### Usage
 
-### Interactive mode (default)
-
-Run without any flags and the script will prompt you for each value:
-
-```bash
-./create_ticket
-```
-
-### Non-interactive mode
-
-Pass all required values as flags to skip prompts entirely. Useful for webhooks and automation:
+Run without flags to use interactive prompts:
 
 ```bash
-./create_ticket --non-interactive \
-  --site mysite \
-  --template autopilot \
-  --email client@example.com \
-  --vrt "https://vrt.example.com/report"
+./scripts/create_ticket
 ```
 
-### All options
+The script will ask for the site name, template, and any other required values.
 
-| Flag | Short | Description |
-|---|---|---|
-| `--site <name>` | `-s` | Pantheon site name |
-| `--template <type>` | `-t` | Template: `autopilot` \| `approval` \| `manual` \| `external` |
-| `--email <address>` | `-e` | Requester email address |
-| `--subject <text>` | | Custom ticket subject (overrides auto-generated subject) |
-| `--vrt <url>` | | VRT report URL (required for `autopilot` template) |
-| `--non-interactive` | `-n` | Disable all prompts; exit with error if required values are missing |
-| `--help` | `-h` | Show usage information |
+### Templates
 
-## Templates
-
-| Template | Flag value | Description |
-|---|---|---|
-| Autopilot | `autopilot` | Managed updates staged via Pantheon Autopilot, ready for review. Deploy date is auto-set to 3 business days out. |
-| Wait for Approval | `approval` | Managed updates awaiting explicit client approval before deployment. |
-| Manual | `manual` | *(Not yet implemented)* |
-| External | `external` | *(Not yet implemented)* |
+| Template | Description |
+|---|---|
+| `autopilot` | Managed updates staged via Pantheon Autopilot, ready for review |
+| `approval` | Managed updates awaiting explicit client approval before deployment |
+| `manual` | *(Not yet implemented)* |
+| `external` | *(Not yet implemented)* |
 
 ### Auto-generated subjects
 
-For managed updates templates the subject is built automatically from the site's primary domain:
+For managed updates templates the subject is built from the site's primary domain (fetched via `terminus`):
 
 - **Autopilot:** `nwtellc.com - Managed Updates Ready for Review - Deploy to LIVE on Tue, Mar 17, '26.`
 - **Approval:** `nwtellc.com - Managed Updates Ready for Review - Deploy upon Approval.`
 
-The deploy date uses **business days only** (Saturday and Sunday are skipped). In interactive mode you can press Enter to accept the auto-generated subject or type a custom one. In non-interactive mode it is used as-is, or overridden with `--subject`.
+Dates use **business days only** — Saturday and Sunday are skipped.
 
-### Auto-calculated dates
-
-| Variable | Value |
+| Date | Value |
 |---|---|
 | Deploy date | 3 business days from now |
 | Reply-by date | 2 business days from now |
 
-## Webhook integration (Next.js example)
+---
 
-To trigger the script from a Next.js API route, the script must run in non-interactive mode. All required values are passed as flags so no stdin prompts are needed.
+## Webhook — `POST /api/ticket`
 
-```js
-// app/api/create-ticket/route.js
-import { exec } from 'child_process'
-import { promisify } from 'util'
+A Next.js API route that creates Zendesk tickets without any shell script dependencies. Designed to be triggered by external services or automation.
 
-const execAsync = promisify(exec)
+### Setup
 
-export async function POST(request) {
-  // Validate webhook secret
-  const secret = request.headers.get('x-webhook-secret')
-  if (secret !== process.env.WEBHOOK_SECRET) {
-    return Response.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+Install dependencies:
 
-  const { site, template, email, vrt } = await request.json()
+```bash
+npm install
+```
 
-  // Return 202 immediately; ticket creation runs in the background
-  const scriptPath = '/path/to/zd-ticket-manager/create_ticket'
-  const cmd = [
-    scriptPath,
-    '--non-interactive',
-    `--site "${site}"`,
-    `--template "${template}"`,
-    `--email "${email}"`,
-    vrt ? `--vrt "${vrt}"` : '',
-  ].filter(Boolean).join(' ')
+Add the required env vars to `.env` (see the CLI setup section above), then run locally:
 
-  execAsync(cmd).catch(err => console.error('Ticket creation failed:', err))
+```bash
+npm run dev
+```
 
-  return Response.json({ status: 'accepted' }, { status: 202 })
+### Deploying to Pantheon
+
+This repo is structured with Next.js at the root so Pantheon can detect and deploy it directly. Connect this GitHub repository to your Pantheon Next.js site (Private Beta).
+
+### Endpoint
+
+**`POST /api/ticket`**
+
+**Headers:**
+
+| Header | Required | Description |
+|---|---|---|
+| `x-webhook-secret` | Yes | Must match `WEBHOOK_SECRET` in `.env` |
+| `Content-Type` | Yes | `application/json` |
+
+**Body:**
+
+| Field | Required | Description |
+|---|---|---|
+| `site` | Yes | Pantheon site name |
+| `template` | Yes | `autopilot` or `approval` |
+| `email` | Yes | Requester email address |
+| `vrt` | For autopilot | VRT report URL |
+| `domain` | No | Primary domain override — auto-looked up via Pantheon API if omitted |
+| `subject` | No | Custom subject override — auto-generated if omitted |
+
+**Example request:**
+
+```bash
+curl -X POST https://your-site.pantheonsite.io/api/ticket \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: your_webhook_secret_here" \
+  -d '{
+    "site": "mysite",
+    "template": "autopilot",
+    "email": "client@example.com",
+    "vrt": "https://vrt.example.com/report"
+  }'
+```
+
+**Example response:**
+
+```json
+{
+  "success": true,
+  "ticket_id": 12345,
+  "ticket_url": "https://yoursubdomain.zendesk.com/tickets/12345",
+  "subject": "nwtellc.com - Managed Updates Ready for Review - Deploy to LIVE on Tue, Mar 17, '26."
 }
 ```
 
-> **Requirements for webhook use:**
-> - `terminus` must be installed on the server and authenticated (`terminus auth:login`)
-> - The `.env` file must be present next to the script on the server
-> - Protect the endpoint with a secret header or similar auth mechanism
+---
 
 ## Getting a Zendesk API Token
 
